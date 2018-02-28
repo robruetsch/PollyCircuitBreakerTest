@@ -51,25 +51,50 @@ namespace PollyTestUI.Services
         {
             var myException = "";
 
-            var waitAndRetryPolicy = Policy
-                .Handle<Exception>(e => !(e is BrokenCircuitException)) // Don't retry if inner circuit breaker is causing this failure
-                .WaitAndRetryForeverAsync(
-                    attempt => TimeSpan.FromMilliseconds(1000),
-                    (exception, calculatedWaitDuration) =>
-                    {
-                        myException = exception.Message;
-                    });
+            //var waitAndRetryPolicy = Policy
+            //    .Handle<Exception>(e => !(e is BrokenCircuitException)) // Don't retry if inner circuit breaker is causing this failure
+            //    .WaitAndRetryForeverAsync(
+            //        attempt => TimeSpan.FromMilliseconds(1000),
+            //        (exception, calculatedWaitDuration) =>
+            //        {
+            //            myException = exception.Message;
+            //        });
 
-            var retryPolicy = Policy
-                .Handle<HttpRequestException>()
-                .WaitAndRetryAsync(3, i => TimeSpan.FromSeconds(2));
+            var policy = Policy.Handle<Exception>().WaitAndRetryAsync(
+                retryCount: 3, // Retry 3 times
+                sleepDurationProvider: attempt => TimeSpan.FromMilliseconds(200), // Wait 200ms between each try.
+                onRetry: (exception, calculatedWaitDuration) => // Capture some info for logging!
+                {
+                    // This is your new exception handler! 
+                    // Tell the user what they've won!
+                    myException += $" | Exception reached {exception.Message} | ";
+                });
 
-            await retryPolicy.ExecuteAsync(async () =>
+            try
+            {
+                // Retry the following call according to the policy - 3 times.
+                await policy.ExecuteAsync(async token =>
+                {
+                    // This code is executed within the Policy 
+
+                    // Make a request and get a response
+                    string msg = await _client.GetStringAsync("api/Test/Site");
+
+                    // Display the response message on the console
+                    myException += msg;
+                }, cancellationToken);
+            }
+            catch (Exception e)
+            {
+                myException += e.Message;
+            }
+
+            await policy.ExecuteAsync(async () =>
             {
                 return await _client.GetStringAsync("api/Test/Site");
             });
 
-            return "Error";
+            return myException;
 
             //try
             //{
@@ -99,16 +124,6 @@ namespace PollyTestUI.Services
             CancellationToken cancellationToken = cancellationSource.Token;
 
             return await GetSiteNamePolly(cancellationToken);
-
-            //HttpResponseMessage response = await _client.GetAsync("api/Test/Site");
-            //if (response.IsSuccessStatusCode)
-            //{
-            //    return await response.Content.ReadAsStringAsync();
-            //}
-            //else
-            //{
-            //    throw new Exception($"GetSiteName() returned status {response.StatusCode}.");
-            //}
         }
 
         public void SetBackupUri()
