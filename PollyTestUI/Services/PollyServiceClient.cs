@@ -17,17 +17,12 @@ namespace PollyTestUI.Services
         private readonly string _primaryUri = "http://localhost:56376/";
         private readonly string _backupUri = "http://localhost:57720/";
         private string _gatewayUri = "http://localhost:56376/";
-
+        private readonly PolicyWrap<String> _policyWrap;
 
         public PollyServiceClient()
         {
             _client = new HttpClient();
             _gatewayUri = _primaryUri;
-        }
-
-        public async Task<string> GetSiteNamePolly(CancellationToken cancellationToken)
-        {
-            var myException = "";
 
             var circuitBreakerPolicy = Policy
                 .Handle<Exception>()
@@ -36,17 +31,20 @@ namespace PollyTestUI.Services
                     durationOfBreak: TimeSpan.FromSeconds(3),
                     onBreak: (ex, breakDelay) =>
                     {
-                        myException += $" | Circuit Breaker Broken | ";
+                        //Called when circuit first open
+                        //Setting the backupUri so calls now go to backup gateway
                         _gatewayUri = _backupUri;
                     },
                     onReset: () =>
                     {
-                        myException += $" | Circuit Reset | ";
+                        //Called when circuit is closed again.
+                        //Primary gateway is responding again, setting to primaryUri.
                         _gatewayUri = _primaryUri;
                     },
-                    onHalfOpen: () => 
+                    onHalfOpen: () =>
                     {
-                        myException += $" | Circuit Reset | ";
+                        //Called when the policy is going to check the original call to see if there are no exceptions.
+                        //Send the call to the primary gateway to see if it's operational again.
                         _gatewayUri = _primaryUri; ;
                     }
                 );
@@ -57,7 +55,7 @@ namespace PollyTestUI.Services
                 attempt => TimeSpan.FromMilliseconds(200),
                 (exception, calculatedWaitDuration) =>
                 {
-                    myException += $" | Exception reached {exception.Message} | ";
+                    //Handle the exception here.
                 });
 
             FallbackPolicy<String> fallbackForCircuitBreaker = Policy<String>
@@ -66,7 +64,10 @@ namespace PollyTestUI.Services
                     fallbackAction: /* Demonstrates fallback action/func syntax */ async ct =>
                     {
                         await Task.FromResult(true);
-                        /* do something else async if desired */
+                        
+                        //This is called after the circuit breaker is tripped
+                        //and the gatewayUri is changed to point to the backup
+                        //gateway.  This call runs on the backup gateway.
                         return await ClientWrapper();
                     },
                     onFallbackAsync: async e =>
@@ -75,6 +76,7 @@ namespace PollyTestUI.Services
                     }
                 );
 
+            //Something really bad has happened.
             FallbackPolicy<String> fallbackForAnyException = Policy<String>
                 .Handle<Exception>()
                 .FallbackAsync(
@@ -90,18 +92,22 @@ namespace PollyTestUI.Services
                 );
 
             PolicyWrap myResilienceStrategy = Policy.Wrap(waitAndRetryPolicy, circuitBreakerPolicy);
-            PolicyWrap<String> policyWrap = fallbackForAnyException.WrapAsync(fallbackForCircuitBreaker.WrapAsync(myResilienceStrategy));
+            _policyWrap = fallbackForAnyException.WrapAsync(fallbackForCircuitBreaker.WrapAsync(myResilienceStrategy));
+
+        }
+
+        public async Task<string> GetSiteNamePolly(CancellationToken cancellationToken)
+        {
+            var myException = "";
 
             try
             {
-                string response = await policyWrap.ExecuteAsync(ct =>
+                return await _policyWrap.ExecuteAsync(ct =>
                                         ClientWrapper(), cancellationToken);
-
-                myException += response;
             }
             catch (Exception e)
             {
-                myException += e.Message;
+                myException = e.Message;
             }
 
             return myException;
